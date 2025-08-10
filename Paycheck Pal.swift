@@ -213,6 +213,9 @@ struct WageSettingsView: View {
     @State private var tempWage: String = ""
     @EnvironmentObject var dataManager: DataManager
     @State private var applyToModified: Bool = false
+    @State private var appliedRecordCounter: Int = 0
+    @State private var showAppliedAlert:Bool = false
+    
     
     
     var body: some View {
@@ -261,13 +264,15 @@ struct WageSettingsView: View {
                                     updated.salary = newSalary
                                     updated.hourly = newHourly
                                     dataManager.records[idx] = updated
+                                    appliedRecordCounter += 1
                                 }
                                 
                             }
                             
                         }
                         dataManager.save()
-                        presentationMode.wrappedValue.dismiss()
+                        showAppliedAlert = true
+                        
                     }
                     
                     Button("應用到全部紀錄") {
@@ -287,18 +292,30 @@ struct WageSettingsView: View {
                                 updated.salary = newSalary
                                 updated.hourly = newHourly
                                 dataManager.records[idx] = updated
+                                appliedRecordCounter += 1
                             }
                             
                         }
                         dataManager.save()
-                        presentationMode.wrappedValue.dismiss()
+                        showAppliedAlert = true
                     }
                 }
                 
             }
             .navigationTitle("時薪設定")
             .onAppear { tempWage = wagePerHour == 0 ? "" : String(format: "%.0f", wagePerHour) }
+            .alert(isPresented: $showAppliedAlert) {
+                Alert(
+                    title: Text("完成"),
+                    message: Text("已應用到 \(appliedRecordCounter) 筆紀錄"),
+                    dismissButton: .default(Text("確定")) {
+                        showAppliedAlert = false
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                )
+            }
         }
+        
     }
     
     func yearMonth(_ d: Date) -> String {
