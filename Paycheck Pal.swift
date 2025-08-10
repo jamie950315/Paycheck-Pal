@@ -14,6 +14,9 @@ struct WorkRecord: Identifiable, Codable {
     var hoursAndMinutesDisplay: String
     var halfHourDecimal: Double
     var salary: Double
+    var hourly: Double
+    var modified: Bool
+    var description: String
 }
 
 // ==========================
@@ -163,6 +166,31 @@ struct RootView: View {
                     .padding(.horizontal)
                 Divider()
                 RecordsListView(monthOffset: monthOffset)
+                Divider()
+                Button("Show Log"){
+                    let dateFormatter = DateFormatter()
+                    dateFormatter.dateFormat = "yyyy/MM/dd (E) HH:mm"
+                    for record in dataManager.records {
+                        let dateStr = dateFormatter.string(from: record.date)
+                        let startStr = dateFormatter.string(from: record.startTime)
+                        let endStr = dateFormatter.string(from: record.endTime)
+                        print("""
+                            --------------------------
+                            Date: \(dateStr)
+                            Start: \(startStr)
+                            End: \(endStr)
+                            Hours: \(record.hoursAndMinutesDisplay)
+                            HalfHourDecimal: \(String(format: "%.1f", record.halfHourDecimal))
+                            Salary: \(Int(record.salary)) 元
+                            Hourly: \(Int(record.hourly)) 元
+                            Modified: \(record.modified)
+                            Description: \(record.description)
+                            """)
+                    }
+                    print("\n\n------------\n\n")
+                    print(dataManager.records)
+                    
+                }
             }
             .navigationTitle("Paycheck Pal")
             .sheet(isPresented: $showingSettings) {
@@ -183,6 +211,9 @@ struct WageSettingsView: View {
     @Environment(\.presentationMode) var presentationMode
     @AppStorage("wagePerHour") var wagePerHour: Double = 0.0
     @State private var tempWage: String = ""
+    @EnvironmentObject var dataManager: DataManager
+    @State private var applyToModified: Bool = false
+    
     
     var body: some View {
         NavigationView {
@@ -200,10 +231,79 @@ struct WageSettingsView: View {
                     }
                     Button("取消") { presentationMode.wrappedValue.dismiss() }
                 }
+                if wagePerHour != 0 {
+                    
+                    Toggle("同步應用到手動修改紀錄", isOn: $applyToModified)
+                    
+                    Button("應用到本月紀錄") {
+                        
+                        if let v = Double(tempWage) {
+                            wagePerHour = v
+                        }
+                        
+                        let now = Date()
+                        let currentMonth = Calendar.current.component(Calendar.Component.month, from: now)
+                        let currentYear = Calendar.current.component(Calendar.Component.year, from: now)
+                        let formmated = String(format: "%04d/%02d", currentYear, currentMonth)
+                        
+                        let target = formmated
+                              
+                        for idx in dataManager.records.indices {
+                            
+                            let rec = dataManager.records[idx]
+                            
+                            if yearMonth(rec.date) == target{
+                                
+                                if applyToModified || !rec.modified{
+                                    let newSalary = rec.halfHourDecimal * wagePerHour
+                                    let newHourly = wagePerHour
+                                    var updated = rec
+                                    updated.salary = newSalary
+                                    updated.hourly = newHourly
+                                    dataManager.records[idx] = updated
+                                }
+                                
+                            }
+                            
+                        }
+                        dataManager.save()
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                    
+                    Button("應用到全部紀錄") {
+                        
+                        if let v = Double(tempWage) {
+                            wagePerHour = v
+                        }
+                        
+                        for idx in dataManager.records.indices {
+                            
+                            let rec = dataManager.records[idx]
+                            
+                            if applyToModified || !rec.modified{
+                                let newHourly = wagePerHour
+                                let newSalary = rec.halfHourDecimal * wagePerHour
+                                var updated = rec
+                                updated.salary = newSalary
+                                updated.hourly = newHourly
+                                dataManager.records[idx] = updated
+                            }
+                            
+                        }
+                        dataManager.save()
+                        presentationMode.wrappedValue.dismiss()
+                    }
+                }
+                
             }
             .navigationTitle("時薪設定")
             .onAppear { tempWage = wagePerHour == 0 ? "" : String(format: "%.0f", wagePerHour) }
         }
+    }
+    
+    func yearMonth(_ d: Date) -> String {
+        let f = DateFormatter(); f.dateFormat = "yyyy/MM"
+        return f.string(from: d)
     }
 }
 
@@ -292,7 +392,7 @@ struct ClockPunchView: View {
         let half = halfHourRoundedDecimal(from: interval)
         let salary = half * wagePerHour
         
-        let record = WorkRecord(date: start.startOfDay(), startTime: start, endTime: end, totalSeconds: interval, hoursAndMinutesDisplay: hAndM, halfHourDecimal: half, salary: salary)
+        let record = WorkRecord(date: start.startOfDay(), startTime: start, endTime: end, totalSeconds: interval, hoursAndMinutesDisplay: hAndM, halfHourDecimal: half, salary: salary, hourly: wagePerHour, modified: false, description: "")
         
         dataManager.add(record)
         
@@ -328,17 +428,18 @@ struct RecordsListView: View {
                                     .font(.headline)
                                 Spacer()
                                 Text("\(Int(rec.salary)) 元")
-                                    .font(.subheadline)
                             }
                             HStack {
                                 Text("上班：\(timeOnly(rec.startTime))")
                                 Text("下班：\(timeOnly(rec.endTime))")
                             }
                             HStack {
+                                let formmatedHalfHour = String(format: "%.1f 小時", rec.halfHourDecimal)
                                 Text(rec.hoursAndMinutesDisplay)
-                                Text("(")
-                                Text(String(format: "%.1f 小時", rec.halfHourDecimal))
-                                Text(")")
+                                Text("(\(formmatedHalfHour))")
+                                Spacer()
+                                Text("時薪：\(Int(rec.hourly))元")
+                                    .font(.subheadline)
                             }
                         }
                         .contentShape(Rectangle())
@@ -398,6 +499,9 @@ struct EditRecordView: View {
     @Environment(\.presentationMode) var presentationMode
     @EnvironmentObject var dataManager: DataManager
     @State var record: WorkRecord
+    @State private var tempHourly: String = ""
+    @State private var originalHourly: String = ""
+    @State private var description: String = ""
     
     var body: some View {
         NavigationView {
@@ -405,15 +509,32 @@ struct EditRecordView: View {
                 Section(header: Text("時間")) {
                     DatePicker("上班", selection: $record.startTime, displayedComponents: [.hourAndMinute, .date])
                     DatePicker("下班", selection: $record.endTime, displayedComponents: [.hourAndMinute, .date])
+                    
                 }
+                
+                Section(header: Text("時薪")) {
+                    TextField("時薪（數字）", text: $tempHourly)
+                        .keyboardType(.decimalPad)
+                }
+                
+                Section(header: Text("備註")) {
+                    TextField("", text: $description)
+                        .submitLabel(.done)
+                }
+                
                 Section {
                     Button("更新") {
+                        if tempHourly != originalHourly {
+                            record.hourly = Double(tempHourly) ?? record.hourly
+                            record.modified = true
+                        }
                         let interval = Int(record.endTime.timeIntervalSince(record.startTime))
                         record.totalSeconds = max(0, interval)
                         record.hoursAndMinutesDisplay = formatHoursMinutes(from: record.totalSeconds)
                         record.halfHourDecimal = halfHourRoundedDecimal(from: record.totalSeconds)
-                        record.salary = record.halfHourDecimal * (UserDefaults.standard.double(forKey: "wagePerHour") == 0 ? 0 : UserDefaults.standard.double(forKey: "wagePerHour"))
+                        record.salary = record.halfHourDecimal * record.hourly
                         record.date = record.startTime.startOfDay()
+                        record.description = description
                         dataManager.replace(record)
                         presentationMode.wrappedValue.dismiss()
                     }
@@ -421,6 +542,11 @@ struct EditRecordView: View {
                 }
             }
             .navigationTitle("編輯紀錄")
+            .onAppear{
+                tempHourly = String(format: "%.0f", record.hourly)
+                originalHourly = tempHourly
+                description = record.description
+            }
         }
     }
 }
@@ -437,7 +563,6 @@ struct SummaryView: View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
                 Stepper("年月份：\(monthLabel())", value: $monthOffset, in: -12...12)
-                                Spacer()
             }
             let filtered = recordsForMonth(offset: monthOffset)
             let totalSeconds = filtered.map { $0.totalSeconds }.reduce(0, +)
