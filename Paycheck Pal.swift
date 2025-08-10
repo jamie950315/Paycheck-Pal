@@ -305,6 +305,7 @@ struct WageSettingsView: View {
         let f = DateFormatter(); f.dateFormat = "yyyy/MM"
         return f.string(from: d)
     }
+    
 }
 
 // ==========================
@@ -502,14 +503,21 @@ struct EditRecordView: View {
     @State private var tempHourly: String = ""
     @State private var originalHourly: String = ""
     @State private var description: String = ""
+    @State private var tempStartTime: Date = Date()
+    @State private var tempEndTime: Date = Date()
     
     var body: some View {
         NavigationView {
             Form {
                 Section(header: Text("時間")) {
-                    DatePicker("上班", selection: $record.startTime, displayedComponents: [.hourAndMinute, .date])
-                    DatePicker("下班", selection: $record.endTime, displayedComponents: [.hourAndMinute, .date])
+                    DatePicker("上班", selection: $tempStartTime, displayedComponents: [.hourAndMinute, .date])
+                    DatePicker("下班", selection: $tempEndTime, displayedComponents: [.hourAndMinute, .date])
                     
+                }
+                
+                
+                var isValidTime: Bool{
+                    Int(tempEndTime.timeIntervalSince(tempStartTime)) > 0
                 }
                 
                 Section(header: Text("時薪")) {
@@ -523,22 +531,38 @@ struct EditRecordView: View {
                 }
                 
                 Section {
-                    Button("更新") {
-                        if tempHourly != originalHourly {
-                            record.hourly = Double(tempHourly) ?? record.hourly
-                            record.modified = true
+                    
+                    if isValidTime {
+                        Button("更新") {
+                            if tempHourly != originalHourly {
+                                record.hourly = Double(tempHourly) ?? record.hourly
+                                record.modified = true
+                            }
+                            record.startTime = tempStartTime
+                            record.endTime = tempEndTime
+                            let interval = Int(record.endTime.timeIntervalSince(record.startTime))
+                            record.totalSeconds = max(0, interval)
+                            record.hoursAndMinutesDisplay = formatHoursMinutes(from: record.totalSeconds)
+                            record.halfHourDecimal = halfHourRoundedDecimal(from: record.totalSeconds)
+                            record.salary = record.halfHourDecimal * record.hourly
+                            record.date = record.startTime.startOfDay()
+                            record.description = description
+                            dataManager.replace(record)
+                            presentationMode.wrappedValue.dismiss()
                         }
-                        let interval = Int(record.endTime.timeIntervalSince(record.startTime))
-                        record.totalSeconds = max(0, interval)
-                        record.hoursAndMinutesDisplay = formatHoursMinutes(from: record.totalSeconds)
-                        record.halfHourDecimal = halfHourRoundedDecimal(from: record.totalSeconds)
-                        record.salary = record.halfHourDecimal * record.hourly
-                        record.date = record.startTime.startOfDay()
-                        record.description = description
-                        dataManager.replace(record)
-                        presentationMode.wrappedValue.dismiss()
+                    } else{
+                        Text ("上班時間必須早於下班時間")
+                            .foregroundColor(.red)
+                            .background(Color.red.opacity(0.2))
+                            .cornerRadius(5)
+                            .font(.system(size: 500))
+                            .minimumScaleFactor(0.01)
+                            .lineLimit(1)
                     }
+                    
+                
                     Button("取消") { presentationMode.wrappedValue.dismiss() }
+                    
                 }
             }
             .navigationTitle("編輯紀錄")
@@ -546,6 +570,8 @@ struct EditRecordView: View {
                 tempHourly = String(format: "%.0f", record.hourly)
                 originalHourly = tempHourly
                 description = record.description
+                tempStartTime = record.startTime
+                tempEndTime = record.endTime
             }
         }
     }
