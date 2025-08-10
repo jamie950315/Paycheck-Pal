@@ -439,6 +439,9 @@ struct RecordsListView: View {
                                 Text(rec.hoursAndMinutesDisplay)
                                 Text("(\(formmatedHalfHour))")
                                 Spacer()
+                                if rec.modified {
+                                    Text("*")
+                                }
                                 Text("時薪：\(Int(rec.hourly))元")
                                     .font(.subheadline)
                             }
