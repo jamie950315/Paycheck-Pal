@@ -147,17 +147,22 @@ struct RootView: View {
     var body: some View {
         NavigationView {
             VStack(spacing: 16) {
+                Divider()
+                Divider()
                 HStack {
                     VStack(alignment: .leading) {
-                        Text("時薪：\(Int(wagePerHour)) 元")
-                            .font(.headline)
+                        HStack(spacing: 0) {
+                            Text("時薪：")
+                                .font(.headline)
+                            GradientGlowText(text:"\(Int(wagePerHour)) 元")
+                        }
                         Text("半小時計算規則：不足0.5小時直接捨棄")
                             .font(.caption)
                     }
                     Spacer()
                     Button("設定") { showingSettings = true }
                 }
-                .padding()
+                .padding(.horizontal)
                 Divider()
                 ClockPunchView()
                     .padding(.horizontal)
@@ -166,33 +171,19 @@ struct RootView: View {
                     .padding(.horizontal)
                 Divider()
                 RecordsListView(monthOffset: monthOffset)
-                Divider()
-                Button("Show Log"){
-                    let dateFormatter = DateFormatter()
-                    dateFormatter.dateFormat = "yyyy/MM/dd (E) HH:mm"
-                    for record in dataManager.records {
-                        let dateStr = dateFormatter.string(from: record.date)
-                        let startStr = dateFormatter.string(from: record.startTime)
-                        let endStr = dateFormatter.string(from: record.endTime)
-                        print("""
-                            --------------------------
-                            Date: \(dateStr)
-                            Start: \(startStr)
-                            End: \(endStr)
-                            Hours: \(record.hoursAndMinutesDisplay)
-                            HalfHourDecimal: \(String(format: "%.1f", record.halfHourDecimal))
-                            Salary: \(Int(record.salary)) 元
-                            Hourly: \(Int(record.hourly)) 元
-                            Modified: \(record.modified)
-                            Description: \(record.description)
-                            """)
+            }
+            .toolbar {
+                ToolbarItem(placement: .principal) {
+                    Button(action: { showLog() }) {
+                        Text("Paycheck Pal")
+                            .font(.title)
+                            .fontWeight(.medium)
                     }
-                    print("\n\n------------\n\n")
-                    print(dataManager.records)
-                    
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("PaycheckPalTitleButton")
                 }
             }
-            .navigationTitle("Paycheck Pal")
+            .navigationBarTitleDisplayMode(.inline)
             .sheet(isPresented: $showingSettings) {
                 WageSettingsView()
             }
@@ -202,7 +193,70 @@ struct RootView: View {
             }
         }
     }
+    
+    func showLog () {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy/MM/dd (E) HH:mm"
+        print(dataManager.records)
+        print("\n\n------------\n\n")
+        for record in dataManager.records {
+            let dateStr = dateFormatter.string(from: record.date)
+            let startStr = dateFormatter.string(from: record.startTime)
+            let endStr = dateFormatter.string(from: record.endTime)
+            print("""
+                \n--------------------------
+                Date: \(dateStr)
+                Start: \(startStr)
+                End: \(endStr)
+                Hours: \(record.hoursAndMinutesDisplay)
+                HalfHourDecimal: \(String(format: "%.1f", record.halfHourDecimal))
+                Salary: \(Int(record.salary)) 元
+                Hourly: \(Int(record.hourly)) 元
+                Modified: \(record.modified)
+                Description: \(record.description)
+                """)
+        }
+        
+        
+    }
 }
+
+
+// ==========================
+// MARK: - Subtle Gradient Stroke + Glow
+// ==========================
+struct GradientGlowText: View {
+    var text: String
+    var period: Double = 6 // seconds per full color cycle
+
+    var body: some View {
+        TimelineView(.animation) { context in
+            let base = Text(text)
+                .font(.headline)
+                .fontWeight(.semibold)
+
+            let gradient = LinearGradient(
+                colors: [Color.cyan, Color.blue, Color.purple],
+                startPoint: .leading,
+                endPoint: .trailing
+            )
+
+            // Global, time-based phase so every instance stays in sync
+            let t = context.date.timeIntervalSinceReferenceDate
+            let phase = (t.truncatingRemainder(dividingBy: period)) / period
+            let angle = Angle(degrees: phase * 360)
+
+            base
+                .foregroundColor(.clear)
+                .overlay(
+                    gradient
+                        .mask(base)
+                        .hueRotation(angle)
+                )
+        }
+    }
+}
+
 
 // ==========================
 // MARK: - Wage Settings
@@ -445,7 +499,7 @@ struct RecordsListView: View {
                                 Text(shortDate(rec.date))
                                     .font(.headline)
                                 Spacer()
-                                Text("\(Int(rec.salary)) 元")
+                                GradientGlowText(text: "\(Int(rec.salary)) 元")
                             }
                             HStack {
                                 Text("上班：\(timeOnly(rec.startTime))")
@@ -632,8 +686,9 @@ struct SummaryView: View {
                 VStack(alignment: .leading) {
                     Text("總時數（小時:分鐘）: \(formatHoursMinutes(from: totalSeconds))")
                     Text(String(format: "總時數  （0.5進位) : %.1f 小時", totalHalf))
-                    HStack {
-                        Text("當月薪資：\(Int(totalSalary)) 元")
+                    HStack(spacing: 0) {
+                        Text("當月薪資：")
+                        GradientGlowText(text:"\(Int(totalSalary)) 元")
                         Spacer()
                         if monthOffset != 0 {
                             Button("本月") {
