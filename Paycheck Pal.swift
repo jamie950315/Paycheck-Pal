@@ -584,6 +584,19 @@ struct EditRecordView: View {
                     Button("取消") { presentationMode.wrappedValue.dismiss() }
                     
                 }
+                
+                Section {
+                    if record.modified {
+                        Button("重置時薪編輯標記") {
+                            record.modified = false
+                            dataManager.replace(record)
+                            presentationMode.wrappedValue.dismiss()
+                        }
+                    }
+                    
+                    
+                }
+                
             }
             .navigationTitle("編輯紀錄")
             .onAppear{
