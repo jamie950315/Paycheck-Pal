@@ -175,7 +175,7 @@ struct RootView: View {
             .toolbar {
                 ToolbarItem(placement: .principal) {
                     Button(action: { showLog() }) {
-                        Text("Paycheck Pal")
+                        GradientGlowText(text: "Paycheck Pal")
                             .font(.title)
                             .fontWeight(.medium)
                     }
@@ -228,12 +228,18 @@ struct RootView: View {
 struct GradientGlowText: View {
     var text: String
     var period: Double = 6 // seconds per full color cycle
+    var font: Font? = nil
+    var weight: Font.Weight? = nil
+    @Environment(\.font) private var envFont
 
     var body: some View {
         TimelineView(.animation) { context in
-            let base = Text(text)
-                .font(.headline)
-                .fontWeight(.semibold)
+            let usedFont = font ?? envFont ?? .headline
+            let base: Text = {
+                var t = Text(text).font(usedFont)
+                if let weight { t = t.fontWeight(weight) }
+                return t
+            }()
 
             let gradient = LinearGradient(
                 colors: [Color.cyan, Color.blue, Color.purple],
