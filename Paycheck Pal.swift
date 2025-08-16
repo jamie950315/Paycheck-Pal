@@ -15,8 +15,11 @@ struct WorkRecord: Identifiable, Codable {
     var halfHourDecimal: Double
     var salary: Double
     var hourly: Double
-    var modified: Bool
+    var modifiedHourly: Bool
     var description: String
+    var usesCustomPayWindow: Bool = false
+    var customPayStartMinutes: Int = 0
+    var customPayEndMinutes: Int = 0
 }
 
 // ==========================
@@ -80,7 +83,86 @@ final class DataManager: ObservableObject {
             save()
         }
     }
+
+    // Recompute a single record using either its custom pay window or the global one,
+    // then update totals and salary with the provided hourly.
+    func recompute(_ rec: WorkRecord,
+                   hourly: Double,
+                   globalEnabled: Bool,
+                   globalStart: Int,
+                   globalEnd: Int) -> WorkRecord {
+        let effectiveEnabled = rec.usesCustomPayWindow ? true : globalEnabled
+        let effectiveStartMin = rec.usesCustomPayWindow ? rec.customPayStartMinutes : globalStart
+        let effectiveEndMin = rec.usesCustomPayWindow ? rec.customPayEndMinutes : globalEnd
+        
+        let interval = paidIntervalSeconds(start: rec.startTime,
+                                           end: rec.endTime,
+                                           enabled: effectiveEnabled,
+                                           startMinutes: effectiveStartMin,
+                                           endMinutes: effectiveEndMin)
+        let newHalf = halfHourRoundedDecimal(from: interval)
+        
+        var updated = rec
+        updated.totalSeconds = interval
+        updated.hoursAndMinutesDisplay = formatHoursMinutes(from: interval)
+        updated.halfHourDecimal = newHalf
+        updated.salary = newHalf * hourly
+        updated.hourly = hourly
+        return updated
+    }
+    
+    // Apply wage + pay-window recomputation to all records; returns number of affected records.
+    func applyToAll(hourly: Double,
+                    applyToModifiedHourly: Bool,
+                    globalEnabled: Bool,
+                    globalStart: Int,
+                    globalEnd: Int) -> Int {
+        var count = 0
+        for idx in records.indices {
+            let rec = records[idx]
+            if applyToModifiedHourly || !rec.modifiedHourly {
+                records[idx] = recompute(rec,
+                                         hourly: hourly,
+                                         globalEnabled: globalEnabled,
+                                         globalStart: globalStart,
+                                         globalEnd: globalEnd)
+                count += 1
+            }
+        }
+        save()
+        return count
+    }
+    
+    // Apply wage + pay-window recomputation to a specific (year, month); returns number of affected records.
+    func applyToMonth(year: Int,
+                      month: Int,
+                      hourly: Double,
+                      applyToModifiedHourly: Bool,
+                      globalEnabled: Bool,
+                      globalStart: Int,
+                      globalEnd: Int) -> Int {
+        var count = 0
+        let cal = Calendar.current
+        for idx in records.indices {
+            let rec = records[idx]
+            let y = cal.component(.year, from: rec.date)
+            let m = cal.component(.month, from: rec.date)
+            if y == year && m == month {
+                if applyToModifiedHourly || !rec.modifiedHourly {
+                    records[idx] = recompute(rec,
+                                             hourly: hourly,
+                                             globalEnabled: globalEnabled,
+                                             globalStart: globalStart,
+                                             globalEnd: globalEnd)
+                    count += 1
+                }
+            }
+        }
+        save()
+        return count
+    }
 }
+
 
 // ==========================
 // MARK: - Helpers
@@ -101,6 +183,94 @@ func halfHourRoundedDecimal(from totalSeconds: Int) -> Double {
     let hoursDecimal = Double(totalSeconds) / 3600.0
     let steps = floor(hoursDecimal / 0.5) // floor to nearest 0.5
     return steps * 0.5
+}
+
+// Pay Window Helpers
+func minutesSinceMidnight(_ date: Date) -> Int {
+    let comps = Calendar.current.dateComponents([.hour, .minute], from: date)
+    return (comps.hour ?? 0) * 60 + (comps.minute ?? 0)
+}
+
+func dateAtMinutes(base: Date, minutes: Int) -> Date {
+    Calendar.current.date(byAdding: .minute, value: minutes, to: base.startOfDay())!
+}
+
+func hmString(_ minutes: Int) -> String {
+    let h = minutes / 60
+    let m = minutes % 60
+    return String(format: "%02d:%02d", h, m)
+}
+
+/// Compute the paid interval in seconds by intersecting [start, end] with the pay window.
+/// If `enabled` is false, returns the full interval between start and end.
+/// If endMinutes <= startMinutes, the pay window is treated as spanning across midnight into the next day.
+func paidIntervalSeconds(start: Date, end: Date, enabled: Bool, startMinutes: Int, endMinutes: Int) -> Int {
+    let full = Int(end.timeIntervalSince(start))
+    if !enabled { return max(0, full) }
+    if end <= start { return 0 }
+
+    let base = start.startOfDay()
+    let windowStart = dateAtMinutes(base: base, minutes: startMinutes)
+    var windowEnd = dateAtMinutes(base: base, minutes: endMinutes)
+    // If the window end is not after start (e.g., 22:00 -> 06:00), roll to next day
+    if windowEnd <= windowStart {
+        windowEnd = Calendar.current.date(byAdding: .day, value: 1, to: windowEnd)!
+    }
+
+    let effectiveStart = max(start, windowStart)
+    let effectiveEnd   = min(end, windowEnd)
+    let interval = effectiveEnd.timeIntervalSince(effectiveStart)
+    return max(0, Int(interval))
+}
+
+
+// Cached DateFormatters (avoid repeated allocations)
+enum DF {
+    static let yearMonth: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy/MM"
+        return f
+    }()
+    static let shortDate: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy/MM/dd (E)"
+        return f
+    }()
+    static let hm12: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "hh:mm a"
+        return f
+    }()
+    static let dateTime: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "yyyy/MM/dd (E) HH:mm"
+        return f
+    }()
+}
+
+
+// Date/Calendar Helpers (unified)
+func year(_ d: Date) -> Int { Calendar.current.component(.year, from: d) }
+func month(_ d: Date) -> Int { Calendar.current.component(.month, from: d) }
+
+func addMonths(_ d: Date, offset: Int) -> Date {
+    Calendar.current.date(byAdding: .month, value: offset, to: d)!
+}
+
+func formatYearMonth(_ d: Date) -> String {
+    DF.yearMonth.string(from: d)
+}
+
+func formatShortDate(_ d: Date) -> String {
+    DF.shortDate.string(from: d)
+}
+
+func formatTimeHM(_ d: Date) -> String {
+    DF.hm12.string(from: d)
+}
+
+func offsetYearMonthKey(offset: Int) -> String {
+    formatYearMonth(addMonths(Date(), offset: offset))
 }
 
 // ==========================
@@ -195,14 +365,16 @@ struct RootView: View {
     }
     
     func showLog () {
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy/MM/dd (E) HH:mm"
+        let dateFormatter = DF.dateTime
         print(dataManager.records)
         print("\n\n------------\n\n")
         for record in dataManager.records {
             let dateStr = dateFormatter.string(from: record.date)
             let startStr = dateFormatter.string(from: record.startTime)
             let endStr = dateFormatter.string(from: record.endTime)
+            let customLines = record.usesCustomPayWindow
+            ? "CustomPayWindowStart: \(hmString(record.customPayStartMinutes))\nCustomPayWindowEnd: \(hmString(record.customPayEndMinutes))\n"
+            : ""
             print("""
                 \n--------------------------
                 Date: \(dateStr)
@@ -212,12 +384,12 @@ struct RootView: View {
                 HalfHourDecimal: \(String(format: "%.1f", record.halfHourDecimal))
                 Salary: \(Int(record.salary)) 元
                 Hourly: \(Int(record.hourly)) 元
-                Modified: \(record.modified)
+                ModifiedHourly: \(record.modifiedHourly)
                 Description: \(record.description)
+                CustomPayWindow: \(record.usesCustomPayWindow)
+                \(customLines)
                 """)
         }
-        
-        
     }
 }
 
@@ -250,7 +422,7 @@ struct GradientGlowText: View {
             // Global, time-based phase so every instance stays in sync
             let t = context.date.timeIntervalSinceReferenceDate
             let phase = (t.truncatingRemainder(dividingBy: period)) / period
-            let angle = Angle(degrees: phase * 360)
+            let angle = Angle(degrees: -phase * 360)
 
             base
                 .foregroundColor(.clear)
@@ -270,11 +442,16 @@ struct GradientGlowText: View {
 struct WageSettingsView: View {
     @Environment(\.presentationMode) var presentationMode
     @AppStorage("wagePerHour") var wagePerHour: Double = 0.0
+    @AppStorage("payWindowEnabled") var payWindowEnabled: Bool = false
+    @AppStorage("payStartMinutes") var payStartMinutes: Int = 9 * 60
+    @AppStorage("payEndMinutes") var payEndMinutes: Int = 18 * 60
     @State private var tempWage: String = ""
     @EnvironmentObject var dataManager: DataManager
-    @State private var applyToModified: Bool = false
+    @State private var applyToModifiedHourly: Bool = false
     @State private var appliedRecordCounter: Int = 0
     @State private var showAppliedAlert:Bool = false
+    @State private var tempPayStart: Date = Date()
+    @State private var tempPayEnd: Date = Date()
     
     
     
@@ -294,76 +471,63 @@ struct WageSettingsView: View {
                     }
                     Button("取消") { presentationMode.wrappedValue.dismiss() }
                 }
-                if wagePerHour != 0 {
-                    
-                    Toggle("同步應用到手動修改紀錄", isOn: $applyToModified)
-                    
-                    Button("應用到本月紀錄") {
-                        
-                        if let v = Double(tempWage) {
-                            wagePerHour = v
-                        }
-                        
-                        let now = Date()
-                        let currentMonth = Calendar.current.component(Calendar.Component.month, from: now)
-                        let currentYear = Calendar.current.component(Calendar.Component.year, from: now)
-                        let formmated = String(format: "%04d/%02d", currentYear, currentMonth)
-                        
-                        let target = formmated
-                              
-                        for idx in dataManager.records.indices {
-                            
-                            let rec = dataManager.records[idx]
-                            
-                            if yearMonth(rec.date) == target{
-                                
-                                if applyToModified || !rec.modified{
-                                    let newSalary = rec.halfHourDecimal * wagePerHour
-                                    let newHourly = wagePerHour
-                                    var updated = rec
-                                    updated.salary = newSalary
-                                    updated.hourly = newHourly
-                                    dataManager.records[idx] = updated
-                                    appliedRecordCounter += 1
-                                }
-                                
+                // Pay Window Settings Section
+                Section(header: Text("支薪時段限制")) {
+                    Toggle("啟用支薪時段限制", isOn: $payWindowEnabled)
+                    if payWindowEnabled {
+                        DatePicker("開始支薪時間", selection: $tempPayStart, displayedComponents: .hourAndMinute)
+                        DatePicker("停止支薪時間", selection: $tempPayEnd, displayedComponents: .hourAndMinute)
+                            .onChange(of: tempPayStart) { _, newValue in
+                                payStartMinutes = minutesSinceMidnight(newValue)
                             }
-                            
-                        }
-                        dataManager.save()
-                        showAppliedAlert = true
-                        
+                            .onChange(of: tempPayEnd) { _, newValue in
+                                payEndMinutes = minutesSinceMidnight(newValue)
+                            }
+                        Text("目前有效支薪區間：\(hmString(payStartMinutes)) - \(hmString(payEndMinutes))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     }
-                    
-                    Button("應用到全部紀錄") {
-                        
+                }
+                if wagePerHour != 0 {
+                    Toggle("同步應用到手動修改時薪", isOn: $applyToModifiedHourly)
+                    Button("應用到本月紀錄") {
                         if let v = Double(tempWage) {
                             wagePerHour = v
                         }
-                        
-                        for idx in dataManager.records.indices {
-                            
-                            let rec = dataManager.records[idx]
-                            
-                            if applyToModified || !rec.modified{
-                                let newHourly = wagePerHour
-                                let newSalary = rec.halfHourDecimal * wagePerHour
-                                var updated = rec
-                                updated.salary = newSalary
-                                updated.hourly = newHourly
-                                dataManager.records[idx] = updated
-                                appliedRecordCounter += 1
-                            }
-                            
+                        appliedRecordCounter = 0
+                        let now = Date()
+                        let cal = Calendar.current
+                        let y = cal.component(.year, from: now)
+                        let m = cal.component(.month, from: now)
+                        appliedRecordCounter = dataManager.applyToMonth(year: y,
+                                                                        month: m,
+                                                                        hourly: wagePerHour,
+                                                                        applyToModifiedHourly: applyToModifiedHourly,
+                                                                        globalEnabled: payWindowEnabled,
+                                                                        globalStart: payStartMinutes,
+                                                                        globalEnd: payEndMinutes)
+                        showAppliedAlert = true
+                    }
+                    Button("應用到全部紀錄") {
+                        if let v = Double(tempWage) {
+                            wagePerHour = v
                         }
-                        dataManager.save()
+                        appliedRecordCounter = dataManager.applyToAll(hourly: wagePerHour,
+                                                                      applyToModifiedHourly: applyToModifiedHourly,
+                                                                      globalEnabled: payWindowEnabled,
+                                                                      globalStart: payStartMinutes,
+                                                                      globalEnd: payEndMinutes)
                         showAppliedAlert = true
                     }
                 }
-                
             }
             .navigationTitle("時薪設定")
-            .onAppear { tempWage = wagePerHour == 0 ? "" : String(format: "%.0f", wagePerHour) }
+            .onAppear {
+                tempWage = wagePerHour == 0 ? "" : String(format: "%.0f", wagePerHour)
+                let base = Date().startOfDay()
+                tempPayStart = dateAtMinutes(base: base, minutes: payStartMinutes)
+                tempPayEnd = dateAtMinutes(base: base, minutes: payEndMinutes)
+            }
             .alert(isPresented: $showAppliedAlert) {
                 Alert(
                     title: Text("完成"),
@@ -375,7 +539,6 @@ struct WageSettingsView: View {
                 )
             }
         }
-        
     }
     
     func yearMonth(_ d: Date) -> String {
@@ -393,6 +556,9 @@ struct ClockPunchView: View {
     @State private var endTime: Date? = nil
     @EnvironmentObject var dataManager: DataManager
     @AppStorage("wagePerHour") var wagePerHour: Double = 0
+    @AppStorage("payWindowEnabled") var payWindowEnabled: Bool = false
+    @AppStorage("payStartMinutes") var payStartMinutes: Int = 9 * 60
+    @AppStorage("payEndMinutes") var payEndMinutes: Int = 18 * 60
     @State private var toastText: String? = nil
     
     var body: some View {
@@ -404,7 +570,18 @@ struct ClockPunchView: View {
                 }
                 Spacer()
             }
-            
+            HStack {
+                if payWindowEnabled {
+                    Text("支薪時段：\(hmString(payStartMinutes)) - \(hmString(payEndMinutes))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("支薪時段：關閉")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                Spacer()
+            }
             HStack(spacing: 20) {
                 Button(action: punchIn) {
                     Text("上班")
@@ -412,7 +589,6 @@ struct ClockPunchView: View {
                         .padding()
                         .background(RoundedRectangle(cornerRadius: 12).stroke())
                 }
-                
                 Button(action: punchOut) {
                     Text("下班")
                         .frame(maxWidth: .infinity)
@@ -420,7 +596,6 @@ struct ClockPunchView: View {
                         .background(RoundedRectangle(cornerRadius: 12).stroke())
                 }
             }
-            
             if let toast = toastText {
                 Text(toast)
                     .font(.caption)
@@ -430,9 +605,7 @@ struct ClockPunchView: View {
     }
     
     func timeString(_ d: Date) -> String {
-        let f = DateFormatter()
-        f.dateFormat = "hh:mm a"
-        return f.string(from: d)
+        DF.hm12.string(from: d)
     }
     
     func punchIn() {
@@ -456,8 +629,8 @@ struct ClockPunchView: View {
         }
         let end = Date()
         endTime = end
-        
-        let interval = Int(end.timeIntervalSince(start))
+
+        let interval = paidIntervalSeconds(start: start, end: end, enabled: payWindowEnabled, startMinutes: payStartMinutes, endMinutes: payEndMinutes)
         if interval <= 0 {
             startTime = nil
             endTime = nil
@@ -465,19 +638,19 @@ struct ClockPunchView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 5) { toastText = nil }
             return
         }
-        
+
         let hAndM = formatHoursMinutes(from: interval)
         let half = halfHourRoundedDecimal(from: interval)
         let salary = half * wagePerHour
-        
-        let record = WorkRecord(date: start.startOfDay(), startTime: start, endTime: end, totalSeconds: interval, hoursAndMinutesDisplay: hAndM, halfHourDecimal: half, salary: salary, hourly: wagePerHour, modified: false, description: "")
-        
+
+        let record = WorkRecord(date: start.startOfDay(), startTime: start, endTime: end, totalSeconds: interval, hoursAndMinutesDisplay: hAndM, halfHourDecimal: half, salary: salary, hourly: wagePerHour, modifiedHourly: false, description: "")
+
         dataManager.add(record)
-        
+
         // reset punch state for next time
         startTime = nil
         endTime = nil
-        
+
         toastText = "已記錄：\(hAndM)，半小時制：\(String(format: "%.1f", half))小時，當日薪資：\(Int(salary)) 元"
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { toastText = nil }
     }
@@ -492,32 +665,32 @@ struct RecordsListView: View {
     let monthOffset: Int
     
     var body: some View {
-        
-        let target = "\(monthLabelFormmatRecord())"
+        let target = offsetYearMonthKey(offset: monthOffset)
         List {
             Section(header: Text("紀錄")) {
                 ForEach(dataManager.records) { rec in
-                    
-                    if yearMonth(rec.date) == target{
-                        
+                    if formatYearMonth(rec.date) == target {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack {
-                                Text(shortDate(rec.date))
+                                Text(formatShortDate(rec.date))
                                     .font(.headline)
                                 Spacer()
                                 GradientGlowText(text: "\(Int(rec.salary)) 元")
                             }
                             HStack {
-                                Text("上班：\(timeOnly(rec.startTime))")
-                                Text("下班：\(timeOnly(rec.endTime))")
+                                Text("上班：\(formatTimeHM(rec.startTime))")
+                                Text("下班：\(formatTimeHM(rec.endTime))")
                             }
                             HStack {
                                 let formmatedHalfHour = String(format: "%.1f 小時", rec.halfHourDecimal)
                                 Text(rec.hoursAndMinutesDisplay)
                                 Text("(\(formmatedHalfHour))")
                                 Spacer()
-                                if rec.modified {
+                                if rec.modifiedHourly {
                                     Text("*")
+                                }
+                                if rec.usesCustomPayWindow {
+                                    Text("^")
                                 }
                                 Text("時薪：\(Int(rec.hourly))元")
                                     .font(.subheadline)
@@ -526,7 +699,6 @@ struct RecordsListView: View {
                         .contentShape(Rectangle())
                         .onTapGesture { showingEdit = rec }
                     }
-                    
                 }
                 .onDelete(perform: dataManager.remove)
             }
@@ -536,41 +708,6 @@ struct RecordsListView: View {
             EditRecordView(record: record)
         }
     }
-    
-    func timeOnly(_ d: Date) -> String {
-        let f = DateFormatter(); f.dateFormat = "hh:mm a"
-        return f.string(from: d)
-    }
-    
-    func shortDate(_ d: Date) -> String {
-        let f = DateFormatter(); f.dateFormat = "yyyy/MM/dd (E)"
-        return f.string(from: d)
-    }
-    
-    func yearMonth(_ d: Date) -> String {
-        let f = DateFormatter(); f.dateFormat = "yyyy/MM"
-        return f.string(from: d)
-    }
-    
-    func monthLabelFormmatRecord() -> String {
-        let now = Date()
-        let currentMonth = Calendar.current.component(Calendar.Component.month, from: now)
-        let currentYear = Calendar.current.component(Calendar.Component.year, from: now)
-        
-        var offsettedMonth = currentMonth+monthOffset
-        var offsettedYear = currentYear
-        
-        if offsettedMonth > 12 {
-            offsettedYear += 1
-            offsettedMonth -= 12
-        }
-        if offsettedMonth < 1 {
-            offsettedYear -= 1
-            offsettedMonth += 12
-        }
-        let formmated = String(format: "%04d/%02d", offsettedYear, offsettedMonth)
-        return "\(formmated)"
-    }
 }
 
 // ==========================
@@ -579,12 +716,18 @@ struct RecordsListView: View {
 struct EditRecordView: View {
     @Environment(\.presentationMode) var presentationMode
     @EnvironmentObject var dataManager: DataManager
+    @AppStorage("payWindowEnabled") var payWindowEnabled: Bool = false
+    @AppStorage("payStartMinutes") var payStartMinutes: Int = 9 * 60
+    @AppStorage("payEndMinutes") var payEndMinutes: Int = 18 * 60
     @State var record: WorkRecord
     @State private var tempHourly: String = ""
     @State private var originalHourly: String = ""
     @State private var description: String = ""
     @State private var tempStartTime: Date = Date()
     @State private var tempEndTime: Date = Date()
+    @State private var useCustomPayWindow: Bool = false
+    @State private var tempCustomStart: Date = Date()
+    @State private var tempCustomEnd: Date = Date()
     
     var body: some View {
         NavigationView {
@@ -592,36 +735,61 @@ struct EditRecordView: View {
                 Section(header: Text("時間")) {
                     DatePicker("上班", selection: $tempStartTime, displayedComponents: [.hourAndMinute, .date])
                     DatePicker("下班", selection: $tempEndTime, displayedComponents: [.hourAndMinute, .date])
-                    
                 }
-                
-                
+
+                Section(header: Text("支薪時段（此紀錄）")) {
+                    Toggle("此紀錄使用自訂支薪時段", isOn: $useCustomPayWindow)
+                    if useCustomPayWindow {
+                        DatePicker("開始支薪時間", selection: $tempCustomStart, displayedComponents: .hourAndMinute)
+                        DatePicker("停止支薪時間", selection: $tempCustomEnd, displayedComponents: .hourAndMinute)
+                        Text("有效支薪區間：\(hmString(minutesSinceMidnight(tempCustomStart))) - \(hmString(minutesSinceMidnight(tempCustomEnd)))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("使用全域支薪設定")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    }
+                }
+
                 var isValidTime: Bool{
                     Int(tempEndTime.timeIntervalSince(tempStartTime)) > 0
                 }
-                
+
                 Section(header: Text("時薪")) {
                     TextField("時薪（數字）", text: $tempHourly)
                         .keyboardType(.decimalPad)
                 }
-                
+
                 Section(header: Text("備註")) {
                     TextField("", text: $description)
                         .submitLabel(.done)
                 }
-                
+
                 Section {
-                    
                     if isValidTime {
                         Button("更新") {
                             if tempHourly != originalHourly {
                                 record.hourly = Double(tempHourly) ?? record.hourly
-                                record.modified = true
+                                record.modifiedHourly = true
                             }
                             record.startTime = tempStartTime
                             record.endTime = tempEndTime
-                            let interval = Int(record.endTime.timeIntervalSince(record.startTime))
-                            record.totalSeconds = max(0, interval)
+
+                            // Persist per-record pay window override
+                            record.usesCustomPayWindow = useCustomPayWindow
+                            if useCustomPayWindow {
+                                record.customPayStartMinutes = minutesSinceMidnight(tempCustomStart)
+                                record.customPayEndMinutes = minutesSinceMidnight(tempCustomEnd)
+                            }
+
+                            // Choose effective window (record override > global)
+                            let effectiveEnabled = useCustomPayWindow ? true : payWindowEnabled
+                            let effectiveStartMin = useCustomPayWindow ? record.customPayStartMinutes : payStartMinutes
+                            let effectiveEndMin = useCustomPayWindow ? record.customPayEndMinutes : payEndMinutes
+
+                            let interval = paidIntervalSeconds(start: record.startTime, end: record.endTime, enabled: effectiveEnabled, startMinutes: effectiveStartMin, endMinutes: effectiveEndMin)
+                            record.totalSeconds = interval
                             record.hoursAndMinutesDisplay = formatHoursMinutes(from: record.totalSeconds)
                             record.halfHourDecimal = halfHourRoundedDecimal(from: record.totalSeconds)
                             record.salary = record.halfHourDecimal * record.hourly
@@ -639,24 +807,21 @@ struct EditRecordView: View {
                             .minimumScaleFactor(0.01)
                             .lineLimit(1)
                     }
-                    
-                
+
                     Button("取消") { presentationMode.wrappedValue.dismiss() }
-                    
+
                 }
-                
+
                 Section {
-                    if record.modified {
+                    if record.modifiedHourly {
                         Button("重置時薪編輯標記") {
-                            record.modified = false
+                            record.modifiedHourly = false
                             dataManager.replace(record)
                             presentationMode.wrappedValue.dismiss()
                         }
                     }
-                    
-                    
                 }
-                
+
             }
             .navigationTitle("編輯紀錄")
             .onAppear{
@@ -665,6 +830,15 @@ struct EditRecordView: View {
                 description = record.description
                 tempStartTime = record.startTime
                 tempEndTime = record.endTime
+                useCustomPayWindow = record.usesCustomPayWindow
+                let base = record.startTime.startOfDay()
+                if record.usesCustomPayWindow {
+                    tempCustomStart = dateAtMinutes(base: base, minutes: record.customPayStartMinutes)
+                    tempCustomEnd = dateAtMinutes(base: base, minutes: record.customPayEndMinutes)
+                } else {
+                    tempCustomStart = dateAtMinutes(base: base, minutes: payStartMinutes)
+                    tempCustomEnd = dateAtMinutes(base: base, minutes: payEndMinutes)
+                }
             }
         }
     }
@@ -709,35 +883,15 @@ struct SummaryView: View {
     }
     
     func monthLabel() -> String {
-        let now = Date()
-        let currentMonth = Calendar.current.component(Calendar.Component.month, from: now)
-        let currentYear = Calendar.current.component(Calendar.Component.year, from: now)
-        
-        var offsettedMonth = currentMonth+monthOffset
-        var offsettedYear = currentYear
-        
-        if offsettedMonth > 12 {
-            offsettedYear += 1
-            offsettedMonth -= 12
-        }
-        if offsettedMonth < 1 {
-            offsettedYear -= 1
-            offsettedMonth += 12
-        }
-
-        return "\(offsettedYear)年 \(offsettedMonth)月"
+        let target = addMonths(Date(), offset: monthOffset)
+        return "\(year(target))年 \(month(target))月"
     }
-    
+
     func recordsForMonth(offset: Int) -> [WorkRecord] {
-        let cal = Calendar.current
-        guard let target = cal.date(byAdding: .month, value: offset, to: Date()) else { return [] }
-        let year = cal.component(.year, from: target)
-        let month = cal.component(.month, from: target)
-        return dataManager.records.filter {
-            let compYear = cal.component(.year, from: $0.date)
-            let compMonth = cal.component(.month, from: $0.date)
-            return compYear == year && compMonth == month
-        }
+        let target = addMonths(Date(), offset: offset)
+        let y = year(target)
+        let m = month(target)
+        return dataManager.records.filter { year($0.date) == y && month($0.date) == m }
     }
 }
 
